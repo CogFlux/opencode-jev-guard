@@ -1,0 +1,8 @@
+# Fixture for jev-guard tests: only [remote] matters to the plugin.
+[remote]
+host = "devbox"
+workdir = "~/myapp"
+os = "linux"
+
+[local]
+allowed_dirs = ["."]

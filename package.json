@@ -1,0 +1,27 @@
+{
+  "name": "opencode-jev-guard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenCode 2 plugin: every shell command, local or through FarHand, is judged by TypeSafe's Jev; risky ones ask first.",
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CogFlux/opencode-jev-guard.git"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "jev",
+    "typesafe",
+    "ai-agents",
+    "coding-agent",
+    "security",
+    "shell",
+    "permissions",
+    "farhand"
+  ]
+}

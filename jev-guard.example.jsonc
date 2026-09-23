@@ -1,0 +1,31 @@
+// Example jev-guard config. Copy to ~/.config/opencode/jev-guard.jsonc (all
+// projects) or <project>/.opencode/jev-guard.jsonc (one project; it may only
+// make the guard stricter). Edits apply without restarting OpenCode; check
+// them with `/jev risks`.
+{
+  // Default threshold for every category without its own. A category asks
+  // when Jev's yes-probability is at or above its threshold.
+  "riskThreshold": 0.7,
+
+  // Jev's overall run/confirm question. With false, only the categories
+  // below decide.
+  "verdict": true,
+  // Below this confidence, an overall "run" still asks.
+  "minConfidence": 0.6,
+
+  "risks": {
+    // Retune a built-in category.
+    "host_litter": { "threshold": 0.8 },
+
+    // Switch a built-in category off.
+    // "global_config": false,
+
+    // Add your own. `question` is a yes/no question about the command; yes
+    // means "ask me first". `label` is what the prompt note shows.
+    "docker": {
+      "label": "touches Docker",
+      "question": "Does this start, stop, remove or rebuild Docker containers, images, volumes or networks?",
+      "threshold": 0.6
+    }
+  }
+}
