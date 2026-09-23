@@ -33,7 +33,10 @@ function answers(verdict: "run" | "confirm", risks: Record<string, number> = {},
   }
 }
 
-let reply: (body: any) => { status: number; json?: unknown } = () => ({ status: 200, json: answers("run") })
+let reply: (body: any) => { status: number; json?: unknown; html?: string; headers?: Record<string, string> } = () => ({
+  status: 200,
+  json: answers("run"),
+})
 
 async function load(options: Record<string, unknown> = {}, storage = new Map<string, unknown>(), project = PROJECT): Promise<Fake> {
   const fake: Fake = { hooks: {}, command: undefined, storage, synthetic: [], requests: [] }
@@ -41,7 +44,8 @@ async function load(options: Record<string, unknown> = {}, storage = new Map<str
     const body = JSON.parse(init.body)
     fake.requests.push(body)
     const r = reply(body)
-    return new Response(JSON.stringify(r.json ?? {}), { status: r.status })
+    if (typeof r.html === "string") return new Response(r.html, { status: r.status, headers: r.headers })
+    return new Response(JSON.stringify(r.json ?? {}), { status: r.status, headers: r.headers })
   }) as typeof fetch
   await plugin.setup({
     options: { apiKey: "test-key", ...options },
@@ -144,9 +148,36 @@ test("Jev errors ask instead of running, and are not cached", async () => {
   const e = await runShell(fake, "ls")
   assert.equal(e.effect, "ask")
   assert.match(e.message, /Jev unavailable \(HTTP 500/)
+  assert.equal(fake.requests.length, 2)
   reply = () => ({ status: 200, json: answers("run") })
   assert.equal((await runShell(fake, "ls", "allow")).effect, "allow")
+  assert.equal(fake.requests.length, 3)
+})
+
+test("a Cloudflare block is retried once, and a lasting one is summarised, not pasted", async () => {
+  const blocked = {
+    status: 403,
+    html: '<!DOCTYPE html> <!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]--> Sorry, you have been blocked',
+    headers: { "content-type": "text/html; charset=UTF-8", server: "cloudflare", "cf-ray": "abc123-IAD" },
+  }
+  let calls = 0
+  reply = () => (++calls === 1 ? blocked : { status: 200, json: answers("run") })
+  const fake = await load({ autoAllow: true })
+  assert.equal((await runShell(fake, "ls")).effect, "allow")
   assert.equal(fake.requests.length, 2)
+
+  reply = () => blocked
+  const e = await runShell(fake, "pwd")
+  assert.equal(e.effect, "ask")
+  assert.equal(e.message, "Jev unavailable (HTTP 403, blocked by Cloudflare in front of the Jev API, ray abc123-IAD); confirm manually")
+})
+
+test("an API error is not retried", async () => {
+  reply = () => ({ status: 422, json: { error: "bad question" } })
+  const fake = await load()
+  const e = await runShell(fake, "ls")
+  assert.equal(fake.requests.length, 1)
+  assert.match(e.message, /Jev unavailable \(HTTP 422: \{"error":"bad question"\}\)/)
 })
 
 test("no API key asks for everything and never calls out", async () => {

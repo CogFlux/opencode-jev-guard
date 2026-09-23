@@ -468,27 +468,66 @@ function judge(policy: Policy, res: JevResponse): Verdict {
 /** Jev's answers, or why there are none. Kept apart from `judge` so a threshold change needs no new request. */
 type Asked = { ok: true; response: JevResponse } | { ok: false; reason: string }
 
+/** Statuses worth one more try: a Cloudflare block or challenge, rate limits, overload, server errors. */
+const RETRYABLE = new Set([403, 408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 524, 529])
+const USER_AGENT = "jev-guard (+https://github.com/CogFlux/opencode-jev-guard)"
+
+/**
+ * A one-line reason for a failed response. An HTML body is an edge page
+ * (Cloudflare in front of the API), not an API error, so it is summarised
+ * with its ray id rather than pasted into the prompt note.
+ */
+function failure(status: number, headers: Headers, body: string): string {
+  const html = /text\/html/i.test(headers.get("content-type") ?? "") || /^\s*</.test(body)
+  if (html) {
+    const edge = /cloudflare/i.test(headers.get("server") ?? "") ? "Cloudflare in front of the Jev API" : "the network in front of the Jev API"
+    const ray = headers.get("cf-ray")
+    return `HTTP ${status}, blocked by ${edge}${ray ? `, ray ${ray}` : ""}`
+  }
+  const text = body.replace(/\s+/g, " ").trim().slice(0, 160)
+  return `HTTP ${status}${text ? `: ${text}` : ""}`
+}
+
 async function askJev(s: Settings, policy: Policy, t: Target): Promise<Asked> {
   if (!s.apiKey) {
     return { ok: false, reason: "Jev is not configured (no TYPESAFE_API_KEY or ~/.secrets/typesafe); confirm manually" }
   }
+  // One deadline for both attempts, so a retry never makes the prompt wait longer than timeoutMs.
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), s.timeoutMs)
+  const body = JSON.stringify(buildRequest(s, policy, t))
+  let reason = ""
   try {
-    const res = await fetch(`${s.baseUrl}/v1/systemone`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.apiKey}` },
-      body: JSON.stringify(buildRequest(s, policy, t)),
-      signal: controller.signal,
-    })
-    if (!res.ok) {
-      const body = (await res.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 160)
-      return { ok: false, reason: `Jev unavailable (HTTP ${res.status}${body ? `: ${body}` : ""}); confirm manually` }
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      let retryAfterMs = 400
+      try {
+        const res = await fetch(`${s.baseUrl}/v1/systemone`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${s.apiKey}`, "User-Agent": USER_AGENT },
+          body,
+          signal: controller.signal,
+        })
+        if (res.ok) return { ok: true, response: (await res.json()) as JevResponse }
+        reason = failure(res.status, res.headers, await res.text().catch(() => ""))
+        if (!RETRYABLE.has(res.status)) break
+        const after = Number(res.headers.get("retry-after"))
+        if (after > 0) retryAfterMs = after * 1000
+      } catch (e) {
+        if (controller.signal.aborted) {
+          reason = `timed out after ${s.timeoutMs}ms`
+          break
+        }
+        reason = e instanceof Error ? e.message : String(e)
+      }
+      debug({ hook: "jev", attempt, reason })
+      if (attempt === 2 || retryAfterMs > 2000) break
+      await new Promise((r) => setTimeout(r, retryAfterMs))
+      if (controller.signal.aborted) {
+        reason = `timed out after ${s.timeoutMs}ms`
+        break
+      }
     }
-    return { ok: true, response: (await res.json()) as JevResponse }
-  } catch (e) {
-    const why = controller.signal.aborted ? `timed out after ${s.timeoutMs}ms` : e instanceof Error ? e.message : String(e)
-    return { ok: false, reason: `Jev unavailable (${why}); confirm manually` }
+    return { ok: false, reason: `Jev unavailable (${reason}); confirm manually` }
   } finally {
     clearTimeout(timer)
   }
