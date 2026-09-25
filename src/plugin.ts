@@ -36,10 +36,11 @@ function envSwitch(): boolean | undefined {
 
 /**
  * What the guard does with one permission request. `keep` leaves OpenCode's
- * own decision; `allow` is only ever produced by `decide` when autoAllow is
- * on and Jev found the command safe.
+ * own decision (`passed` when Jev judged the command safe); `ask` turns it
+ * into a prompt. There is deliberately no `allow`: the guard can only add
+ * prompts.
  */
-type Decision = { effect: "keep" } | { effect: "allow" } | { effect: "ask"; reason: string; target?: Target }
+type Decision = { effect: "keep"; passed?: boolean } | { effect: "ask"; reason: string; target?: Target }
 
 type Switch = { on: boolean; source: string }
 
@@ -139,6 +140,11 @@ export async function setup(ctx: any) {
     let decision: Decision = { effect: "keep" }
     try {
       decision = await decide(event)
+    } catch (err) {
+      // A bug in the guard must not let a command through unjudged.
+      decision = { effect: "ask", reason: `Jev guard failed (${err instanceof Error ? err.message : String(err)}); confirm manually` }
+    }
+    try {
       apply(event, decision)
     } finally {
       debug({
@@ -178,15 +184,13 @@ export async function setup(ctx: any) {
       verdict = asked.ok ? judge(p, asked.response) : { run: false, reason: asked.reason }
     }
     if (!verdict.run) return { effect: "ask", reason: verdict.reason, target }
-    return p.autoAllow ? { effect: "allow" } : { effect: "keep" }
+    return { effect: "keep", passed: true }
   }
 
   /** The only place that changes the permission request. */
   function apply(event: any, d: Decision): void {
-    if (d.effect === "keep") return
-    if (d.effect === "allow") {
-      count(event.sessionID, "run")
-      event.effect = "allow"
+    if (d.effect === "keep") {
+      if (d.passed) count(event.sessionID, "run")
       return
     }
     count(event.sessionID, "asked")

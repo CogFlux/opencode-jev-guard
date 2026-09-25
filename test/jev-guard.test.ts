@@ -98,12 +98,14 @@ beforeEach(() => {
   reply = () => ({ status: 200, json: answers("run") })
 })
 
-test("with autoAllow, a safe command runs without a prompt even when config says ask", async () => {
-  const fake = await load({ autoAllow: true })
+test("a safe command keeps OpenCode's own decision", async () => {
+  const fake = await load()
+  assert.equal((await runShell(fake, "npm run build", "allow")).effect, "allow")
   const e = await runShell(fake, "npm test")
-  assert.equal(e.effect, "allow")
-  assert.equal(fake.requests.length, 1)
-  const req = fake.requests[0]
+  assert.equal(e.effect, "ask")
+  assert.equal(e.message, undefined)
+  assert.equal(fake.requests.length, 2)
+  const req = fake.requests[1]
   assert.equal(req.model, "jev-latest")
   assert.equal(req.state.command, "npm test")
   assert.equal(req.state.project_directory, PROJECT)
@@ -171,8 +173,8 @@ test("a firewall block is summarised, not pasted, and not retried", async () => 
 test("a rate limit is retried once", async () => {
   let calls = 0
   reply = () => (++calls === 1 ? { status: 429, json: { error: "slow down" } } : { status: 200, json: answers("run") })
-  const fake = await load({ autoAllow: true })
-  assert.equal((await runShell(fake, "ls")).effect, "allow")
+  const fake = await load()
+  assert.equal((await runShell(fake, "ls", "allow")).effect, "allow")
   assert.equal(fake.requests.length, 2)
 })
 
@@ -220,6 +222,25 @@ test("secrets are redacted before leaving the machine", async () => {
   )
   const sent = fake.requests[0].state.command
   for (const secret of ["abc.def", "hunter2", "sk-1234567890abcdefghij", "pw1"]) assert.ok(!sent.includes(secret), sent)
+})
+
+test("fine-grained GitHub tokens are redacted", async () => {
+  const fake = await load()
+  const token = "github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQ"
+  await runShell(fake, `gh auth login --with-token <<< ${token}`)
+  const sent = fake.requests[0].state.command
+  assert.ok(!sent.includes(token), sent)
+  assert.match(sent, /\[REDACTED\]/)
+})
+
+test("an error inside the guard asks instead of letting the command through", async () => {
+  const fake = await load()
+  // A request the guard has no execute.before record for, with resources it chokes on.
+  const resources = { length: 1, join: () => { throw new Error("unexpected resources") } }
+  const e: any = { sessionID: "s1", action: "shell", resources, effect: "allow" }
+  await fake.hooks["permission.evaluate"]!(e)
+  assert.equal(e.effect, "ask")
+  assert.match(e.message, /Jev guard failed \(unexpected resources\)/)
 })
 
 test("other permission actions are left alone", async () => {
@@ -288,7 +309,7 @@ test("settings survive a restart; JEV_GUARD overrides the default but not a sess
   assert.equal((await runShell(envOff, "ls", "allow", undefined, "c")).effect, "ask")
 })
 
-test("without autoAllow the guard never allows anything", async () => {
+test("the guard never allows anything", async () => {
   const scenarios: Array<() => { status: number; json?: unknown }> = [
     () => ({ status: 200, json: answers("run") }),
     () => ({ status: 200, json: answers("run", {}, 0.3) }),
@@ -299,7 +320,7 @@ test("without autoAllow the guard never allows anything", async () => {
   ]
   for (const [i, sc] of scenarios.entries()) {
     reply = sc
-    for (const options of [{}, { verdict: false }, { enabled: false }]) {
+    for (const options of [{}, { verdict: false }, { enabled: false }, { autoAllow: true }]) {
       const fake = await load(options)
       assert.equal((await runShell(fake, `cmd ${i}`, "ask")).effect, "ask", `scenario ${i} ${JSON.stringify(options)}`)
       assert.notEqual((await runRemote(fake, `cmd ${i}`, "ask")).effect, "allow")
@@ -418,6 +439,25 @@ function writeConfig(file: string, text: string) {
   utimesSync(file, t, t)
 }
 
+test("autoAllow in a config is reported and ignored: the guard still only keeps or asks", async () => {
+  const { globalFile } = policyDirs()
+  try {
+    writeConfig(globalFile, `{ "autoAllow": true }`)
+    reply = () => ({ status: 200, json: answers("run") })
+    const fake = await load({ autoAllow: true })
+    assert.equal((await runShell(fake, "ls", "ask")).effect, "ask")
+    assert.equal((await runShell(fake, "pwd", "allow")).effect, "allow")
+    reply = () => ({ status: 200, json: answers("run", { harmful: 0.9 }) })
+    assert.equal((await runShell(fake, "rm -rf ~", "allow")).effect, "ask")
+    await fake.command.execute({ sessionID: "s1", prompt: { text: "risks" } })
+    const text = fake.synthetic.at(-1).text
+    assert.match(text, /plugin options: autoAllow was removed; the guard can only add prompts/)
+    assert.match(text, /jev-guard\.jsonc: autoAllow was removed; the guard can only add prompts/)
+  } finally {
+    rmSync(TMP, { recursive: true, force: true })
+  }
+})
+
 test("a built-in category can be switched off and another retuned", async () => {
   reply = () => ({ status: 200, json: answers("run", { privacy: 0.99, host_litter: 0.85 }) })
   const fake = await load({ risks: { privacy: false, host_litter: { threshold: 0.9 } } })
@@ -448,8 +488,8 @@ test("riskThreshold is the default for every category without its own", async ()
 
 test("verdict: false leaves the decision to the categories alone", async () => {
   reply = () => ({ status: 200, json: answers("confirm", {}, 0.99) })
-  const fake = await load({ verdict: false, autoAllow: true })
-  assert.equal((await runShell(fake, "make deploy")).effect, "allow")
+  const fake = await load({ verdict: false })
+  assert.equal((await runShell(fake, "make deploy", "allow")).effect, "allow")
   assert.ok(!("verdict" in fake.requests[0].questions))
 })
 
@@ -546,7 +586,7 @@ test("a project file cannot loosen the guard", async () => {
 
     await fake.command.execute({ sessionID: "s1", prompt: { text: "risks" } })
     const text = fake.synthetic.at(-1).text
-    for (const what of ["verdict: false", "autoAllow: true", "raising riskThreshold", "lowering minConfidence", "switching off risks.harmful", "raising risks.privacy.threshold", "changing the question or label of risks.host_litter"]) {
+    for (const what of ["verdict: false", "autoAllow was removed", "raising riskThreshold", "lowering minConfidence", "switching off risks.harmful", "raising risks.privacy.threshold", "changing the question or label of risks.host_litter"]) {
       assert.ok(text.includes(what), `${what} should be reported:\n${text}`)
     }
     assert.match(fake.synthetic.at(-1).description, /global_install 0\.40/)

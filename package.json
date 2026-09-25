@@ -5,7 +5,8 @@
   "type": "module",
   "description": "OpenCode 2 plugin: every shell command, local or through FarHand, is judged by TypeSafe's Jev; risky ones ask first.",
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/",
+    "bundle": "BUN_BE_BUN=1 opencode build jev-guard.ts --target=node --format=esm --outfile dist/jev-guard.js"
   },
   "license": "MIT",
   "repository": {

@@ -19,7 +19,7 @@ globalThis.fetch = (async (url: any, init: any) => {
 
 const hooks: Record<string, any> = {}
 await plugin.setup({
-  options: { autoAllow: true },
+  options: {},
   location: { directory: project, project: { directory: project } },
   storage: { get: async () => undefined, set: async () => {} },
   tool: { hook: async (n: string, f: any) => (hooks[`tool.${n}`] = f) },
@@ -33,7 +33,7 @@ let i = 0
 for (const c of cases) {
   const id = `bench_${++i}`
   await hooks["tool.execute.before"]({ tool: c.tool, id, input: { command: c.command } })
-  const event: any = { action: c.tool, resources: [c.command], source: { type: "tool", id }, effect: "ask" }
+  const event: any = { action: c.tool, resources: [c.command], source: { type: "tool", id }, effect: "allow" }
   last = undefined
   await hooks["permission.evaluate"](event)
   const a = last?.answers ?? {}

@@ -22,12 +22,6 @@ export interface Options {
   minConfidence?: number
   timeoutMs?: number
   /**
-   * When Jev finds a command safe, run it without a prompt even if your
-   * OpenCode config says `ask` for shell. Default false: safe commands keep
-   * OpenCode's own decision and Jev can only add prompts.
-   */
-  autoAllow?: boolean
-  /**
    * Also ask Jev's overall run/confirm question. Default true. With false,
    * only the risk categories decide, so switching one off really stops it
    * from causing prompts.

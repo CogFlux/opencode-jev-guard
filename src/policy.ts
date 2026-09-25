@@ -19,7 +19,6 @@ export interface Risk {
 export interface Policy {
   verdict: boolean
   minConfidence: number
-  autoAllow: boolean
   risks: Record<string, Risk>
   /** Config entries that were ignored, and why. */
   problems: string[]
@@ -74,7 +73,6 @@ export function buildPolicy(layers: Layer[]): Policy {
   const problems: string[] = []
   let riskThreshold = 0.7
   let minConfidence = 0.6
-  let autoAllow = false
   let verdict = true
   const defs: Record<string, { label?: string; question?: string; threshold?: number; builtin: boolean } | false> = {}
   for (const [id, r] of Object.entries(BUILTIN_RISKS)) defs[id] = { ...r, builtin: true }
@@ -92,11 +90,8 @@ export function buildPolicy(layers: Layer[]): Policy {
       else if (stricter && c.minConfidence < minConfidence) looser("lowering minConfidence")
       else minConfidence = c.minConfidence
     }
-    if (c.autoAllow !== undefined) {
-      if (typeof c.autoAllow !== "boolean") problems.push(`${source}: autoAllow must be true or false`)
-      else if (stricter && c.autoAllow && !autoAllow) looser("autoAllow: true")
-      else autoAllow = c.autoAllow
-    }
+    // Removed: the guard can only turn a decision into ask, never into allow.
+    if (c.autoAllow !== undefined) problems.push(`${source}: autoAllow was removed; the guard can only add prompts`)
     if (c.verdict !== undefined) {
       if (typeof c.verdict !== "boolean") problems.push(`${source}: verdict must be true or false`)
       else if (stricter && !c.verdict && verdict) looser("verdict: false")
@@ -164,7 +159,7 @@ export function buildPolicy(layers: Layer[]): Policy {
     risks[id] = { label: d.label ?? id.replaceAll("_", " "), question: d.question, threshold: d.threshold ?? riskThreshold, builtin: d.builtin }
   }
   const signature = JSON.stringify([verdict, Object.entries(risks).map(([id, r]) => [id, r.question])])
-  return { verdict, minConfidence, autoAllow, risks, problems, signature, sources: layers.map((l) => l.source) }
+  return { verdict, minConfidence, risks, problems, signature, sources: layers.map((l) => l.source) }
 }
 
 /** The jev-guard.jsonc files that apply here, global first. */

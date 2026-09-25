@@ -1,18 +1,21 @@
 // Opt-in diagnostics.
 
 import { appendFileSync, existsSync, realpathSync } from "node:fs"
-import { dirname, join } from "node:path"
+import { basename, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 /**
- * Diagnostics: when a `jev-guard.log` file exists next to the real plugin file
- * (`touch jev-guard.log` in this repo), every hook call is appended to it as
- * one JSON line. Delete the file to stop. Commands are logged after redaction.
+ * Diagnostics: when a `jev-guard.log` file exists next to the plugin file
+ * (`touch jev-guard.log` in this repo, or next to the installed bundle),
+ * every hook call is appended to it as one JSON line. Delete the file to
+ * stop. Commands are logged after redaction.
  */
 export const LOG_FILE = (() => {
   try {
-    // This file lives in src/; the log sits at the repository root, next to jev-guard.ts.
-    return join(dirname(dirname(realpathSync(fileURLToPath(import.meta.url)))), "jev-guard.log")
+    // From the repository this file is src/log.ts and the log sits at the root,
+    // next to jev-guard.ts; in the bundle it sits next to the bundle.
+    const dir = dirname(realpathSync(fileURLToPath(import.meta.url)))
+    return join(basename(dir) === "src" ? dirname(dir) : dir, "jev-guard.log")
   } catch {
     return undefined
   }

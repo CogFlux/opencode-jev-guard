@@ -29,7 +29,7 @@ export function redact(text: string): string {
     .replace(/(authorization:\s*(?:bearer|basic|token)\s+)[^\s'"]+/gi, "$1[REDACTED]")
     .replace(/\b((?:[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD))\s*=\s*)(['"]?)[^\s'"]+\2/g, "$1$2[REDACTED]$2")
     .replace(/(?<![\w-])(--?(?:password|passwd|token|api-key|secret)[= ])(['"]?)[^\s'"]+\2/gi, "$1$2[REDACTED]$2")
-    .replace(/\b(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})\b/g, "[REDACTED]")
+    .replace(/\b(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|github_pat_[A-Za-z0-9_]{22,}|AKIA[0-9A-Z]{16})\b/g, "[REDACTED]")
     .replace(/(:\/\/[^\s:/@]+:)[^\s@/]+@/g, "$1[REDACTED]@")
 }
 

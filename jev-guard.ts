@@ -12,7 +12,8 @@
  *   - exposes private data (keys, tokens, password stores, personal files, sending data out)
  * and whether it can run unattended. Anything flagged becomes a permission
  * prompt with Jev's reasons; everything else keeps OpenCode's own permission
- * decision (or runs without asking, with the `autoAllow` option).
+ * decision. The guard only ever adds prompts; it never allows a command
+ * your OpenCode or FarHand settings would ask about.
  *
  * The risk categories and their thresholds are configurable: built-in ones
  * can be retuned or switched off and new ones added, in `jev-guard.jsonc`
@@ -31,8 +32,9 @@
  * node_modules. The code is in src/: config (options), questions (what Jev is
  * asked), policy (categories and thresholds), jev (the API client and the
  * verdict), farhand (remote commands), log (diagnostics), plugin (the hooks
- * and /jev). Installed through a symlink to this file, the relative imports
- * still resolve: OpenCode's Bun follows the link to the repository first.
+ * and /jev). `npm run bundle` builds it into one file, dist/jev-guard.js,
+ * which is what gets installed. A symlink to this file also works, for
+ * development: OpenCode's Bun follows the link to the repository first.
  */
 
 import { setup } from "./src/plugin.ts"

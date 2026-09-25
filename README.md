@@ -16,12 +16,15 @@ a remote host. Jev answers six typed questions about the command:
 
 A command counts as safe only if the verdict is `run` with confidence
 ≥ `minConfidence` **and** every risk is below `riskThreshold`. A safe command
-keeps whatever your OpenCode `permission` config decides (set `autoAllow` to
-let it run without a prompt). Anything else gets OpenCode's normal permission
-prompt, with Jev's reasons as the message, e.g. `Jev: installs software globally (0.93) [p(run)=0.04, confidence 0.95]`.
+keeps whatever your OpenCode `permission` config decides. Anything else gets
+OpenCode's normal permission prompt, with Jev's reasons as the message, e.g. `Jev: installs software globally (0.93) [p(run)=0.04, confidence 0.95]`.
 
 If Jev cannot be reached, times out, or no API key is set, the command asks.
 It never silently runs.
+
+The guard only ever adds prompts. It never turns a prompt your OpenCode or
+FarHand settings ask for into an allow, so a tool that approves commands one
+by one (Crosstalk, for instance) keeps seeing every one of them.
 
 OpenCode 2.0.14's permission prompt does not show the reason: its body is
 fixed (`$ <command>` for `shell`, `Tool: <name>` for MCP tools). So a flagged
@@ -77,16 +80,20 @@ is skipped, never fatal: the rest of the file still applies.
 
 A project file can add categories and lower thresholds, but not switch
 anything off, raise a threshold, change a category's question or label, turn
-`verdict` off or `autoAllow` on. Those entries are ignored and reported. The
+`verdict` off. Those entries are ignored and reported. The
 file lives inside the project, where writing a file looks harmless to Jev,
 so without this rule an agent (or a cloned repository) could turn its own
 guard off with one unflagged command. The global file is outside every
 project, and changing it is itself flagged as a global setting.
 
-`riskThreshold`, `minConfidence`, `verdict`, `autoAllow` and `risks` can also
+`riskThreshold`, `minConfidence`, `verdict` and `risks` can also
 be given as plugin options; the global file overrides them. Connection
 settings (`apiKey`, `baseUrl`, `model`, `timeoutMs`) are plugin options or
 environment variables only, never read from these files.
+
+`autoAllow` (run safe commands without a prompt) was removed: the guard can
+only add prompts. A config that still sets it is not an error; the entry is
+ignored and `/jev risks` reports it.
 
 ## Switching it on and off
 
@@ -106,7 +113,7 @@ Off is neutral: Jev is not asked and nothing is changed, so your own OpenCode
 (and FarHand) permission rules decide, exactly as without the plugin. With
 `shell: ask` in your config, every shell command asks again. Off never allows
 anything your own rules would ask about; to run commands without prompts,
-change those rules (or use `autoAllow` with the guard on).
+change those rules.
 
 `deny` rules in your OpenCode `permission` config are final in both states;
 OpenCode never consults plugins about them.
@@ -131,17 +138,35 @@ prompts). Only `remote_shell` is judged; FarHand's file and transfer tools
 ## Setup
 
 1. Put your TypeSafe key in `~/.secrets/typesafe` (or export `TYPESAFE_API_KEY`).
-2. Load the plugin. Either link it into the global plugins directory:
+2. Build the plugin into one file and copy it into the global plugins
+   directory:
 
    ```sh
    git clone https://github.com/CogFlux/opencode-jev-guard.git
    cd opencode-jev-guard
-   ln -s "$PWD/jev-guard.ts" ~/.config/opencode/plugins/jev-guard.ts
+   npm run bundle        # uses the Bun inside OpenCode; installs nothing
+   cp dist/jev-guard.js ~/.config/opencode/plugins/
    ```
 
    or copy it into a project's `.opencode/plugins/` to use it there only.
+   Restart OpenCode. To update, pull, bundle and copy again.
 
-The file imports nothing from OpenCode, so it needs no `node_modules`.
+The installed file is a copy, so an agent working in this repository cannot
+change the guard that is judging its own commands. The bundle imports
+nothing but Node built-ins, so it needs no `node_modules`.
+
+### Developing
+
+For work on the plugin itself, link the entry file instead, so each restart
+picks up your edits:
+
+```sh
+ln -s "$PWD/jev-guard.ts" ~/.config/opencode/plugins/jev-guard.ts
+```
+
+Remove the link before installing a copy; with both, OpenCode loads the
+plugin twice. Only use the link while you are the one editing the repository:
+any agent that edits it edits the live guard.
 
 ## All settings
 
@@ -151,7 +176,7 @@ object form of the `plugins` config entry:
 ```jsonc
 {
   "plugins": [
-    { "package": "/path/to/jev-guard.ts", "options": { "riskThreshold": 0.4 } }
+    { "package": "/path/to/jev-guard.js", "options": { "riskThreshold": 0.4 } }
   ]
 }
 ```
@@ -163,7 +188,6 @@ object form of the `plugins` config entry:
 | `risks` | the built-in five | project file (stricter only) → global file → option | next command |
 | `verdict` | `true` | project file (`true` only) → global file → option | next command |
 | `minConfidence` | `0.6` | project file (higher only) → global file → option | next command |
-| `autoAllow` | `false` | project file (`false` only) → global file → option | next command |
 | API key | none | option `apiKey` → `TYPESAFE_API_KEY` → file named by option `apiKeyFile` (default `~/.secrets/typesafe`) | restart |
 | `baseUrl` | `https://api.typesafe.ai` | option → `TYPESAFE_BASE_URL` | restart |
 | `model` | `jev-latest` | option → `JEV_GUARD_MODEL` | restart |
