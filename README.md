@@ -17,8 +17,8 @@ a remote host. Jev answers six typed questions about the command:
 A command counts as safe only if the verdict is `run` with confidence
 ≥ `minConfidence` **and** every risk is below `riskThreshold`. A safe command
 keeps whatever your OpenCode `permission` config decides (set `autoAllow` to
-let it run without a prompt). Anything else gets OpenCode's normal permission prompt, with Jev's reasons as the
-message, e.g. `Jev: installs software globally (0.93) [p(run)=0.04, confidence 0.95]`.
+let it run without a prompt). Anything else gets OpenCode's normal permission
+prompt, with Jev's reasons as the message, e.g. `Jev: installs software globally (0.93) [p(run)=0.04, confidence 0.95]`.
 
 If Jev cannot be reached, times out, or no API key is set, the command asks.
 It never silently runs.
@@ -88,22 +88,28 @@ be given as plugin options; the global file overrides them. Connection
 settings (`apiKey`, `baseUrl`, `model`, `timeoutMs`) are plugin options or
 environment variables only, never read from these files.
 
-## Switching it off
+## Switching it on and off
 
-In any session:
+The switch is per session: each OpenCode session can have the guard on or
+off, and keeps that setting across restarts. A session without its own
+setting follows the default.
 
-- `/jev off` — every shell command runs **without confirmation**.
-- `/jev on` — back to Jev checking.
-- `/jev status` (or `/jev`) — current state and pass/ask counts.
-- `/jev risks` — the categories and thresholds in effect.
+| Command | Does |
+| --- | --- |
+| `/jev on`, `/jev off`, `/jev toggle` | Switch this session |
+| `/jev reset` | Drop this session's own setting; it follows the default again |
+| `/jev default on`, `/jev default off` | Set the default for every session without its own setting |
+| `/jev` or `/jev status` | This session's state, where it comes from, and its pass/ask counts |
+| `/jev risks` | The categories and thresholds in effect, and the files they came from |
 
-The switch is saved in the plugin's OpenCode storage, so it survives restarts.
-`JEV_GUARD=off opencode` (or `on`) forces the starting state for one launch.
+Off is neutral: Jev is not asked and nothing is changed, so your own OpenCode
+(and FarHand) permission rules decide, exactly as without the plugin. With
+`shell: ask` in your config, every shell command asks again. Off never allows
+anything your own rules would ask about; to run commands without prompts,
+change those rules (or use `autoAllow` with the guard on).
 
-`deny` rules in your OpenCode `permission` config are final in both modes;
-OpenCode never consults plugins about them. With the guard off, FarHand
-commands are left to FarHand's own `[approval]` setting rather than forced
-through.
+`deny` rules in your OpenCode `permission` config are final in both states;
+OpenCode never consults plugins about them.
 
 ## FarHand
 
@@ -137,9 +143,10 @@ prompts). Only `remote_shell` is judged; FarHand's file and transfer tools
 
 The file imports nothing from OpenCode, so it needs no `node_modules`.
 
-## Options
+## All settings
 
-Pass options with the object form of the `plugins` config entry:
+Every setting, where it can be set, and which source wins. "Options" are the
+object form of the `plugins` config entry:
 
 ```jsonc
 {
@@ -149,19 +156,24 @@ Pass options with the object form of the `plugins` config entry:
 }
 ```
 
-| Option          | Default                  | Meaning                                                               |
-| --------------- | ------------------------ | --------------------------------------------------------------------- |
-| `enabled`       | `true`                   | Starting state when `/jev` has never been used                         |
-| `apiKey`        | `$TYPESAFE_API_KEY`      | TypeSafe API key                                                       |
-| `apiKeyFile`    | `~/.secrets/typesafe`    | File to read the key from when neither of the above is set             |
-| `baseUrl`       | `https://api.typesafe.ai` | Also `$TYPESAFE_BASE_URL`                                             |
-| `model`         | `jev-latest`             | Also `$JEV_GUARD_MODEL`; pin a version for stable behaviour            |
-| `riskThreshold` | `0.7`                    | A risk at or above this asks (see [Tuning](#tuning))                   |
-| `risks`         | built-in five            | Categories to retune, switch off or add (see [Choosing the categories](#choosing-the-categories)) |
-| `verdict`       | `true`                   | Also ask Jev's overall run/confirm question                            |
-| `minConfidence` | `0.6`                    | A `run` verdict below this confidence asks                             |
-| `timeoutMs`     | `8000`                   | Jev request timeout                                                    |
-| `autoAllow`     | `false`                  | `true` = safe commands skip OpenCode's `ask` rule; `false` = Jev only adds prompts |
+| Setting | Default | Set in, highest priority first | Applies |
+| --- | --- | --- | --- |
+| On/off for a session | on | `/jev on\|off` in that session → `JEV_GUARD=on\|off` → `/jev default on\|off` → option `enabled` | at once |
+| `riskThreshold` | `0.7` | project file (lower only) → global file → option | next command |
+| `risks` | the built-in five | project file (stricter only) → global file → option | next command |
+| `verdict` | `true` | project file (`true` only) → global file → option | next command |
+| `minConfidence` | `0.6` | project file (higher only) → global file → option | next command |
+| `autoAllow` | `false` | project file (`false` only) → global file → option | next command |
+| API key | none | option `apiKey` → `TYPESAFE_API_KEY` → file named by option `apiKeyFile` (default `~/.secrets/typesafe`) | restart |
+| `baseUrl` | `https://api.typesafe.ai` | option → `TYPESAFE_BASE_URL` | restart |
+| `model` | `jev-latest` | option → `JEV_GUARD_MODEL` | restart |
+| `timeoutMs` | `8000` | option | restart |
+| FarHand remote | none | `.farhand.toml` in the project → `FARHAND_CONFIG` → `~/.config/farhand/config.toml` | restart |
+
+"Global file" is `~/.config/opencode/jev-guard.jsonc` (under
+`$XDG_CONFIG_HOME` when set); "project file" is
+`<project>/.opencode/jev-guard.jsonc`. `/jev status` names where the on/off
+state came from; `/jev risks` names the files the policy was read from.
 
 ## What leaves your machine
 

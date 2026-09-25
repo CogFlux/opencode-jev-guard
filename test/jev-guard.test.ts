@@ -53,6 +53,7 @@ async function load(options: Record<string, unknown> = {}, storage = new Map<str
     storage: {
       get: async (k: string) => fake.storage.get(k),
       set: async (k: string, v: unknown) => void fake.storage.set(k, v),
+      remove: async (k: string) => void fake.storage.delete(k),
     },
     tool: { hook: async (name: string, fn: Hook) => void (fake.hooks[`tool.${name}`] = fn) },
     permission: { hook: async (name: string, fn: Hook) => void (fake.hooks[`permission.${name}`] = fn) },
@@ -65,11 +66,11 @@ async function load(options: Record<string, unknown> = {}, storage = new Map<str
 }
 
 let callSeq = 0
-async function runShell(fake: Fake, command: string, effect = "ask", cwd?: string) {
+async function runShell(fake: Fake, command: string, effect = "ask", cwd?: string, sessionID = "s1") {
   const id = `call_${++callSeq}`
-  await fake.hooks["tool.execute.before"]!({ tool: "shell", id, sessionID: "s1", input: { command, cwd } })
+  await fake.hooks["tool.execute.before"]!({ tool: "shell", id, sessionID, input: { command, cwd } })
   const event: any = {
-    sessionID: "s1",
+    sessionID,
     action: "shell",
     resources: command.split(/\s*&&\s*/),
     source: { type: "tool", messageID: "m1", id },
@@ -129,7 +130,7 @@ test("a low-confidence run verdict asks", async () => {
   const fake = await load()
   const e = await runShell(fake, "make")
   assert.equal(e.effect, "ask")
-  assert.match(e.message, /unsure/)
+  assert.equal(e.message, "Jev: leans towards run, but is unsure (confidence 0.40 < 0.60, p(run)=0.40)")
 })
 
 test("missing risk answers fail closed", async () => {
@@ -154,22 +155,25 @@ test("Jev errors ask instead of running, and are not cached", async () => {
   assert.equal(fake.requests.length, 3)
 })
 
-test("a Cloudflare block is retried once, and a lasting one is summarised, not pasted", async () => {
-  const blocked = {
+test("a firewall block is summarised, not pasted, and not retried", async () => {
+  reply = () => ({
     status: 403,
     html: '<!DOCTYPE html> <!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]--> Sorry, you have been blocked',
     headers: { "content-type": "text/html; charset=UTF-8", server: "cloudflare", "cf-ray": "abc123-IAD" },
-  }
+  })
+  const fake = await load()
+  const e = await runShell(fake, "pwd")
+  assert.equal(e.effect, "ask")
+  assert.equal(e.message, "Jev unavailable (HTTP 403, blocked by the Jev API's Cloudflare firewall, ray abc123-IAD); confirm manually")
+  assert.equal(fake.requests.length, 1)
+})
+
+test("a rate limit is retried once", async () => {
   let calls = 0
-  reply = () => (++calls === 1 ? blocked : { status: 200, json: answers("run") })
+  reply = () => (++calls === 1 ? { status: 429, json: { error: "slow down" } } : { status: 200, json: answers("run") })
   const fake = await load({ autoAllow: true })
   assert.equal((await runShell(fake, "ls")).effect, "allow")
   assert.equal(fake.requests.length, 2)
-
-  reply = () => blocked
-  const e = await runShell(fake, "pwd")
-  assert.equal(e.effect, "ask")
-  assert.equal(e.message, "Jev unavailable (HTTP 403, blocked by Cloudflare in front of the Jev API, ray abc123-IAD); confirm manually")
 })
 
 test("an API error is not retried", async () => {
@@ -226,47 +230,89 @@ test("other permission actions are left alone", async () => {
   assert.equal(fake.requests.length, 0)
 })
 
-test("/jev off lets everything through, is saved, and /jev on restores", async () => {
+test("/jev off leaves OpenCode's own decision alone in that session only, and /jev on restores", async () => {
   reply = () => ({ status: 200, json: answers("confirm", { harmful: 0.99 }) })
   const fake = await load()
-  await fake.command.execute({ sessionID: "s1", prompt: { text: "off" } })
-  assert.equal(fake.storage.get("enabled"), false)
-  assert.match(fake.synthetic.at(-1).description, /Jev guard OFF/)
+  const jev = (text: string, sessionID = "s1") => fake.command.execute({ sessionID, prompt: { text } })
+  await jev("off")
+  assert.equal(fake.storage.get("session/s1"), false)
+  assert.match(fake.synthetic.at(-1).description, /^Jev guard OFF \(set for this session\)/)
   assert.equal(fake.synthetic.at(-1).resume, false)
-  assert.equal((await runShell(fake, "sudo rm -rf /")).effect, "allow")
+  // Neutral: a config `ask` stays ask, a config `allow` stays allow, and Jev is not called.
+  assert.equal((await runShell(fake, "sudo rm -rf /", "ask")).effect, "ask")
+  assert.equal((await runShell(fake, "sudo rm -rf /", "allow")).effect, "allow")
   assert.equal(fake.requests.length, 0)
 
-  await fake.command.execute({ sessionID: "s1", prompt: { text: "on" } })
+  // Another session is still guarded.
+  assert.equal((await runShell(fake, "sudo rm -rf /", "allow", undefined, "s2")).effect, "ask")
+  assert.equal(fake.requests.length, 1)
+
+  await jev("on")
   assert.equal((await runShell(fake, "sudo rm -rf /")).effect, "ask")
-  await fake.command.execute({ sessionID: "s1", prompt: { text: "" } })
-  assert.match(fake.synthetic.at(-1).description, /Jev guard ON · 0 passed, 1 asked/)
-  await fake.command.execute({ sessionID: "s1", prompt: { text: "foo" } })
+  await jev("")
+  assert.match(fake.synthetic.at(-1).description, /^Jev guard ON \(set for this session\) · this session: 0 passed, 1 asked · default on \(built-in\)/)
+  await jev("foo")
   assert.match(fake.synthetic.at(-1).description, /Unknown "\/jev foo"/)
 })
 
-test("saved off state survives a restart; JEV_GUARD env overrides it", async () => {
+test("/jev default switches every session without its own setting; /jev reset follows it again", async () => {
+  reply = () => ({ status: 200, json: answers("confirm") })
   const fake = await load()
-  await fake.command.execute({ sessionID: "s1", prompt: { text: "off" } })
-
-  const restarted = await load({}, fake.storage)
-  assert.equal((await runShell(restarted, "ls")).effect, "allow")
-  assert.equal(restarted.requests.length, 0)
-
-  process.env.JEV_GUARD = "on"
-  const envOn = await load({}, fake.storage)
-  assert.equal((await runShell(envOn, "ls", "allow")).effect, "allow")
-  assert.equal(envOn.requests.length, 1)
-
-  process.env.JEV_GUARD = "off"
-  const envOff = await load()
-  assert.equal((await runShell(envOff, "ls")).effect, "allow")
-  assert.equal(envOff.requests.length, 0)
+  const jev = (text: string, sessionID: string) => fake.command.execute({ sessionID, prompt: { text } })
+  await jev("on", "mine")
+  await jev("default off", "other")
+  assert.equal(fake.storage.get("enabled"), false)
+  assert.match(fake.synthetic.at(-1).description, /^Jev guard OFF \(default, from \/jev default\)/)
+  assert.equal((await runShell(fake, "x", "allow", undefined, "fresh")).effect, "allow")
+  assert.equal((await runShell(fake, "x", "allow", undefined, "mine")).effect, "ask")
+  await jev("reset", "mine")
+  assert.equal(fake.storage.has("session/mine"), false)
+  assert.equal((await runShell(fake, "x", "allow", undefined, "mine")).effect, "allow")
 })
 
-test("enabled: false in options starts off", async () => {
+test("settings survive a restart; JEV_GUARD overrides the default but not a session's own setting", async () => {
+  reply = () => ({ status: 200, json: answers("confirm") })
+  const fake = await load()
+  await fake.command.execute({ sessionID: "a", prompt: { text: "off" } })
+
+  const restarted = await load({}, fake.storage)
+  assert.equal((await runShell(restarted, "ls", "allow", undefined, "a")).effect, "allow")
+  assert.equal((await runShell(restarted, "ls", "allow", undefined, "b")).effect, "ask")
+
+  process.env.JEV_GUARD = "off"
+  const envOff = await load({}, fake.storage)
+  assert.equal((await runShell(envOff, "ls", "allow", undefined, "b")).effect, "allow")
+  await envOff.command.execute({ sessionID: "b", prompt: { text: "status" } })
+  assert.match(envOff.synthetic.at(-1).description, /^Jev guard OFF \(default, from JEV_GUARD\)/)
+  await envOff.command.execute({ sessionID: "c", prompt: { text: "on" } })
+  assert.equal((await runShell(envOff, "ls", "allow", undefined, "c")).effect, "ask")
+})
+
+test("without autoAllow the guard never allows anything", async () => {
+  const scenarios: Array<() => { status: number; json?: unknown }> = [
+    () => ({ status: 200, json: answers("run") }),
+    () => ({ status: 200, json: answers("run", {}, 0.3) }),
+    () => ({ status: 200, json: answers("confirm") }),
+    () => ({ status: 200, json: answers("run", { privacy: 0.9 }) }),
+    () => ({ status: 500, json: {} }),
+    () => ({ status: 200, json: {} }),
+  ]
+  for (const [i, sc] of scenarios.entries()) {
+    reply = sc
+    for (const options of [{}, { verdict: false }, { enabled: false }]) {
+      const fake = await load(options)
+      assert.equal((await runShell(fake, `cmd ${i}`, "ask")).effect, "ask", `scenario ${i} ${JSON.stringify(options)}`)
+      assert.notEqual((await runRemote(fake, `cmd ${i}`, "ask")).effect, "allow")
+    }
+  }
+})
+
+test("enabled: false in options makes the default off", async () => {
   const fake = await load({ enabled: false })
-  assert.equal((await runShell(fake, "brew install jq")).effect, "allow")
+  assert.equal((await runShell(fake, "brew install jq", "allow")).effect, "allow")
   assert.equal(fake.requests.length, 0)
+  await fake.command.execute({ sessionID: "s1", prompt: { text: "status" } })
+  assert.match(fake.synthetic.at(-1).description, /^Jev guard OFF \(default, from plugin options\)/)
 })
 
 test("by default a safe command keeps OpenCode's own decision", async () => {
@@ -303,7 +349,7 @@ test("a safe FarHand command keeps FarHand's own decision", async () => {
   assert.equal((await runRemote(fake, "whoami", "ask")).effect, "ask")
 })
 
-test("with the guard off, FarHand commands are left to FarHand", async () => {
+test("with the guard off, FarHand commands are left to OpenCode and FarHand too", async () => {
   const fake = await load({ enabled: false }, new Map(), FARHAND_PROJECT)
   assert.equal((await runRemote(fake, "sudo rm -rf /", "ask")).effect, "ask")
   assert.equal(fake.requests.length, 0)
@@ -440,6 +486,7 @@ test("project file overrides global file, which overrides options; edits apply w
 
     await fake.command.execute({ sessionID: "s1", prompt: { text: "risks" } })
     assert.match(fake.synthetic.at(-1).description, /docker\* 0\.65/)
+    assert.match(fake.synthetic.at(-1).text, /Read from: built-in defaults, then plugin options, then .*config\/opencode\/jev-guard\.jsonc, then .*\.opencode\/jev-guard\.jsonc\./)
     assert.match(fake.synthetic.at(-1).description, /host_litter 0\.95/)
   } finally {
     rmSync(TMP, { recursive: true, force: true })
